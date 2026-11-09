@@ -1,0 +1,8 @@
+# deploy/grafana/provisioning/dashboards/dashboards.yml
+apiVersion: 1
+providers:
+  - name: zero-to-prod
+    folder: ""
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
