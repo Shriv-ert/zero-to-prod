@@ -1,0 +1,50 @@
+name: infra
+
+on:
+  pull_request:
+    paths: ["infra/**"]
+  push:
+    branches: [main]
+    paths: ["infra/**"]
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  TF_VAR_image: ghcr.io/shriv-ert/zero-to-prod:latest
+  TF_VAR_grafana_password: ${{ secrets.GRAFANA_PASSWORD }}
+  TF_VAR_my_ip: ${{ vars.MY_IP }}
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.3"
+      - run: terraform fmt -check
+      - run: terraform init -input=false
+      - run: terraform validate
+      - id: plan
+        run: terraform plan -no-color -input=false -out=tfplan
+      - if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const plan = `${{ steps.plan.outputs.stdout }}`.slice(0, 60000);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number,
+              body: '### Terraform plan\n```\n' + plan + '\n```'
+            });
+      - if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -input=false tfplan

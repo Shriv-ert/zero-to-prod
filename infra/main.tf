@@ -91,3 +91,5 @@ resource "aws_eip" "app" {
   instance = aws_instance.app.id
   tags     = { Name = var.name }
 }
+
+# Managed by the infra workflow; plan on PR, apply on merge.
