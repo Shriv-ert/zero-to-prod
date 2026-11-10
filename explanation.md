@@ -765,7 +765,8 @@ permissions:
   id-token: write
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}
+  # Ganti YOUR_GITHUB_USER dengan username GitHub Anda (WAJIB huruf kecil semua / lowercase)
+  IMAGE: ghcr.io/YOUR_GITHUB_USER/zero-to-prod
 
 jobs:
   build:
@@ -792,6 +793,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 ```
+
+> **Catatan Penting (Aturan Huruf Kecil / Lowercase Docker):**
+> Standar penamaan Docker/OCI **mengharamkan huruf kapital** pada nama repository/image. Jika username GitHub Anda memiliki huruf besar (misalnya `Shriv-ert`), ekspresi bawaan `${{ github.repository }}` akan menyebabkan proses buildx gagal dengan error `repository name must be lowercase`. 
+> Oleh karena itu, kita langsung menuliskan username dalam huruf kecil pada variabel `IMAGE:` (misalnya: `ghcr.io/shriv-ert/zero-to-prod`).
 
 **Penjelasan Teknis `release.yml`:**
 - `paths-ignore: ["infra/**", "README.md"]`: Menghemat waktu dan kuota CI dengan tidak membangun ulang *Docker image* aplikasi jika yang berubah hanyalah kode Terraform atau dokumentasi.
@@ -1159,10 +1164,18 @@ aws iam create-open-id-connect-provider \
   --client-id-list sts.amazonaws.com
 ```
 
-> **Catatan:** Jika Anda pernah membuatnya sebelumnya di akun AWS yang sama, perintah ini akan menampilkan pesan `EntityAlreadyExists` — itu normal dan aman untuk dilanjutkan.
+> **Catatan 1:** Jika Anda pernah membuatnya sebelumnya di akun AWS yang sama, perintah ini akan menampilkan pesan `EntityAlreadyExists` — itu normal dan aman untuk dilanjutkan.
+>
+> **Catatan 2 (PENTING untuk Opt-In Region seperti Jakarta `ap-southeast-3`):** 
+> Secara default, AWS STS global endpoint menerbitkan token **Versi 1 (`v1Token`)** yang menolak autentikasi OIDC ke region-region *opt-in*. Anda **wajib** mengaktifkan token **Versi 2 (`v2Token`)** dengan menjalankan perintah berikut:
+> ```bash
+> aws iam set-security-token-service-preferences --global-endpoint-token-version v2Token
+> ```
 
 ### Langkah 7.2 — Buat IAM Role dengan Trust Policy Khusus untuk Repositori Anda
-Buat IAM Role bernama `github-zero-to-prod` yang **hanya** dapat diasumsikan (*assumed*) oleh *workflow* GitHub Actions yang berasal dari repositori `YOUR_GITHUB_USER/zero-to-prod` milik Anda. **Jangan lupa ganti `YOUR_GITHUB_USER` dengan username GitHub Anda (perhatikan huruf besar/kecilnya)!**
+Buat IAM Role bernama `github-zero-to-prod` yang **hanya** dapat diasumsikan (*assumed*) oleh *workflow* GitHub Actions yang berasal dari repositori `YOUR_GITHUB_USER/zero-to-prod` milik Anda. **Ganti `YOUR_GITHUB_USER` dengan username GitHub Anda.**
+
+Gunakan array pada kondisi `StringLike` untuk menangani variasi huruf kapital/kecil maupun format ID repositori:
 
 ```bash
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
@@ -1175,7 +1188,12 @@ cat > trust.json <<EOF
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
       "StringEquals": {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"},
-      "StringLike": {"token.actions.githubusercontent.com:sub": "repo:YOUR_GITHUB_USER/zero-to-prod:*"}
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": [
+          "repo:YOUR_GITHUB_USER/zero-to-prod:*",
+          "repo:YOUR_GITHUB_USER*/zero-to-prod*:*"
+        ]
+      }
     }
   }]
 }
@@ -1183,6 +1201,12 @@ EOF
 aws iam create-role --role-name github-zero-to-prod --assume-role-policy-document file://trust.json
 rm trust.json
 ```
+
+> **Tips Jika Ingin Memperbarui Trust Policy Role yang Sudah Ada:**
+> Jika role sudah terlanjur dibuat dan Anda ingin memperbarui kebijakan *trust*-nya, jangan gunakan `create-role` atau `update-role`, melainkan gunakan:
+> ```bash
+> aws iam update-assume-role-policy --role-name github-zero-to-prod --policy-document file://trust.json
+> ```
 
 **Penjelasan Keamanan OIDC (`trust.json`):**
 - Saat *workflow* GitHub Actions berjalan, GitHub menerbitkan token JWT bertanda tangan kriptografi yang memuat klaim `sub` (*subject*) berisi `"repo:YOUR_GITHUB_USER/zero-to-prod:ref:refs/heads/main"`.
@@ -1253,7 +1277,8 @@ permissions:
   pull-requests: write
 
 env:
-  TF_VAR_image: ghcr.io/${{ github.repository }}:latest
+  # Ganti YOUR_GITHUB_USER dengan username GitHub Anda (WAJIB huruf kecil semua / lowercase)
+  TF_VAR_image: ghcr.io/YOUR_GITHUB_USER/zero-to-prod:latest
   TF_VAR_grafana_password: ${{ secrets.GRAFANA_PASSWORD }}
   TF_VAR_my_ip: ${{ vars.MY_IP }}
 
@@ -1470,8 +1495,22 @@ Berikut adalah daftar kendala yang paling sering ditemui beserta penyebab dan ca
    - **Solusi:** Perbarui nilai `my_ip` di `infra/terraform.tfvars` (atau variabel repositori `MY_IP` di GitHub) dengan hasil `$(curl -s https://checkip.amazonaws.com)/32` terbaru, lalu jalankan `terraform apply` kembali.
 
 8. **`configure-aws-credentials` gagal dengan pesan `Not authorized to perform sts:AssumeRoleWithWebIdentity`**
-   - **Penyebab:** Kondisi `sub` pada *trust policy* IAM Role tidak cocok persis dengan `repo:YOUR_USER/zero-to-prod:*` (termasuk perbedaan huruf besar/kecil pada *username* GitHub), atau *OIDC provider* belum terdaftar di akun AWS.
-   - **Solusi:** Periksa *trust policy* yang terpasang saat ini dengan menjalankan `aws iam get-role --role-name github-zero-to-prod` dan perbaiki jika ada salah ketik.
+   - **Penyebab A (Region Opt-In seperti Jakarta `ap-southeast-3`):** Secara bawaan, AWS STS mengeluarkan token Versi 1 (`v1Token`) yang tidak didukung untuk autentikasi OIDC ke region-region *opt-in*.
+     - **Solusi:** Aktifkan token Versi 2 di akun AWS Anda:
+       ```bash
+       aws iam set-security-token-service-preferences --global-endpoint-token-version v2Token
+       ```
+   - **Penyebab B (Kondisi `sub` tidak cocok atau beda huruf kapital/kecil):** Pola `sub` pada *trust policy* role IAM sensitif terhadap huruf besar/kecil (*case-sensitive*) atau format ID repositori baru GitHub.
+     - **Solusi:** Perbarui trust policy menggunakan array wildcard pada `StringLike`:
+       ```json
+       "StringLike": {
+         "token.actions.githubusercontent.com:sub": [
+           "repo:YOUR_USER/zero-to-prod:*",
+           "repo:YOUR_USER*/zero-to-prod*:*"
+         ]
+       }
+       ```
+       Perbarui dengan perintah: `aws iam update-assume-role-policy --role-name github-zero-to-prod --policy-document file://trust.json`.
 
 9. **Komentar `Terraform plan` pada Pull Request kosong melompong**
    - **Penyebab:** Action `hashicorp/setup-terraform` membungkus (*wraps*) binary Terraform agar *output* `stdout` dapat ditangkap oleh ekspresi `${{ steps.plan.outputs.stdout }}`.
@@ -1480,6 +1519,14 @@ Berikut adalah daftar kendala yang paling sering ditemui beserta penyebab dan ca
 10. **Job `deploy` berhasil (*Success*), tetapi versi aplikasi yang berjalan di server tidak berubah**
     - **Penyebab:** Periksa *output* SSM Run Command yang tercetak di *log* GitHub Actions. Jika perintah `sed` gagal memperbarui file `.env`, maka `docker compose up -d app` tidak akan melakukan apa-apa (*no-op*) karena referensi `APP_IMAGE=` tidak berubah.
     - **Solusi:** Pastikan baris `APP_IMAGE=` berada tepat di awal baris di dalam file `/opt/app/.env` pada server.
+
+11. **Docker buildx gagal dengan error `invalid tag "...": repository name must be lowercase`**
+    - **Penyebab:** Standar penamaan Docker/OCI melarang keras huruf kapital pada nama image. Jika username GitHub Anda memiliki huruf kapital (misal `Shriv-ert`), ekspresi `${{ github.repository }}` otomatis membawa huruf besar tersebut.
+    - **Solusi:** Tulis nama repositori langsung dengan huruf kecil semua pada `env.IMAGE` di `release.yml` dan `infra.yml` (misal `ghcr.io/shriv-ert/zero-to-prod`), atau gunakan sintaks bash `${GITHUB_REPOSITORY,,}` untuk mengonversinya.
+
+12. **Terraform error `Unsupported Terraform Core version` (tetap membaca versi lama 1.9.8 padahal sudah di-update)**
+    - **Penyebab:** Ada file binary Terraform versi lama yang "menimpa" di folder dengan prioritas lebih tinggi (misalnya di `~/.local/bin/terraform` atau `/usr/local/bin/terraform`), sehingga sistem tidak memanggil versi baru di `/usr/bin/terraform`.
+    - **Solusi:** Jalankan `which -a terraform` untuk melihat semua lokasi terraform di sistem, lalu hapus file binary lama (misal: `rm ~/.local/bin/terraform`). Jalankan `rehash` lalu verifikasi dengan `terraform -v`.
 
 ---
 
